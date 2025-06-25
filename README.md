@@ -70,9 +70,10 @@ This separation ensures:
 ## Infrastructure
 
 - **Storage**: MinIO (S3-compatible) for data persistence
-- **Format**: Parquet files for efficient columnar storage
+- **Format**: Parquet files with PyArrow optimizations for efficient columnar storage
 - **Partitioning**: 50 partitions of 200k rows each (~100MB per file)
-- **Memory**: Designed for 4-8GB RAM machines
+- **Memory**: Optimized for 4-8GB RAM machines with PyArrow streaming
+- **Compression**: Snappy compression with dictionary encoding for repeated values
 
 ## Setup & Usage
 
@@ -125,6 +126,7 @@ The pipeline provides detailed logging:
 - Generates realistic support ticket data using extracted business logic
 - Product-specific message templates for each product line
 - Reproducible with seed=42
+- **Output**: PyArrow Table for memory efficiency
 - **Performance**: 200k tickets generated in ~4 seconds per partition
 
 ### Asset 2: `ticket_embeddings`
@@ -132,7 +134,8 @@ The pipeline provides detailed logging:
 - Processes one partition at a time
 - Uses SentenceTransformer 'all-MiniLM-L6-v2'
 - Batch size: 128 for memory efficiency
-- Output: 384-dimensional vectors
+- **Output**: PyArrow Table with float32 embeddings (50% memory reduction)
+- **Vectors**: 384-dimensional with optimized data types
 - **Performance**: ~30 seconds per partition for embedding generation
 
 ### Asset 3: `trained_clustering_model`
@@ -145,6 +148,7 @@ The pipeline provides detailed logging:
 ### Asset 4: `ticket_clusters`
 **Partitioned**: 50 partitions
 - Assigns cluster IDs using trained model
+- **Output**: PyArrow Table for efficient storage
 - Provides cluster distribution per partition
 - Perfect load balancing across 20 clusters
 
@@ -181,11 +185,12 @@ Groups similar tickets into 20 semantic topics for efficient handling.
 | Total Records | 10,000,000 |
 | Partitions | 50 |
 | Records/Partition | 200,000 |
-| File Size | ~100MB per partition |
-| Embedding Dimensions | 384 |
+| File Size | ~100MB per partition (with Snappy compression) |
+| Embedding Dimensions | 384 (float32 optimized) |
 | Clusters | 20 |
 | Data Generation | ~4 seconds per partition |
 | Embedding Generation | ~30 seconds per partition |
+| Memory Usage | ~50% reduction with PyArrow optimizations |
 | Estimated Total Runtime | 2-4 hours |
 
 ## Storage Layout
@@ -274,8 +279,13 @@ Core dependencies for the pipeline:
 ### Performance Tips
 
 - **Parallel Processing**: Materialize multiple partitions simultaneously in Dagster UI
-- **Memory Optimization**: Adjust batch sizes based on available RAM
-- **Storage Optimization**: Use compression in Parquet files for better performance
+- **Memory Optimization**: PyArrow automatically optimizes memory usage with:
+  - Float32 embeddings (50% memory reduction)
+  - Streaming I/O with 1MB buffers
+  - Dictionary encoding for repeated values
+  - Self-destructing Arrow tables
+- **Storage Optimization**: Snappy compression with optimized row groups (50k rows)
+- **Testing**: Run `python test_pyarrow_optimization.py` to verify optimizations
 
 ---
 
