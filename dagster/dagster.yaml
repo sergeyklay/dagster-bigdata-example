@@ -14,3 +14,46 @@ local_artifact_storage:
   class: LocalArtifactStorage
   config:
     base_dir: ./dagster/storage
+
+# Global concurrency limits
+# Note: Using concurrency.runs.max_concurrent_runs instead of run_coordinator.config.max_concurrent_runs
+# because they are incompatible according to Dagster docs
+concurrency:
+  runs:
+    max_concurrent_runs: 2  # Limit total concurrent runs
+    tag_concurrency_limits:
+      - key: 'dagster/partition_set'
+        limit: 2  # Only 2 partitions can run at once
+      - key: 'dagster/concurrency_key'
+        value: 'data_generation'
+        limit: 1  # Only 1 data generation asset at a time
+      - key: 'dagster/concurrency_key'
+        value: 'embeddings'
+        limit: 1  # Only 1 embedding asset at a time
+      - key: 'dagster/concurrency_key'
+        value: 'clustering'
+        limit: 1  # Only 1 clustering asset at a time
+      - key: 'dagster/concurrency_key'
+        value: 'analysis'
+        limit: 1  # Only 1 analysis asset at a time
+  pools:
+    granularity: 'run'
+    default_limit: 1  # Default to 1 concurrent operation per pool
+
+# Reduce worker threads for various services
+sensors:
+  use_threads: true
+  num_workers: 2
+
+schedules:
+  use_threads: true
+  num_workers: 2
+
+backfills:
+  use_threads: true
+  num_workers: 2
+
+auto_materialize:
+  enabled: false
+  use_threads: false
+  num_workers: 1

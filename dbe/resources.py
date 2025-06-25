@@ -128,13 +128,13 @@ class S3ParquetIOManager(ConfigurableIOManager):
             # Use PyArrow for memory-efficient reading
             buffer = BytesIO(parquet_bytes)
 
-            # Read with PyArrow for better memory management
+            # Read with PyArrow using single-threaded processing
             table = pq.read_table(
                 buffer,
-                # Memory optimization settings
-                use_threads=True,  # Enable multi-threading
-                buffer_size=1024 * 1024,  # 1MB buffer for streaming
-                pre_buffer=True,  # Pre-buffer for better performance
+                # Memory optimization settings with reduced threading
+                use_threads=False,  # Disable multi-threading to reduce workers
+                buffer_size=512 * 1024,  # Reduced buffer size (512KB)
+                pre_buffer=False,  # Disable pre-buffering to reduce memory
             )
 
             # Convert to pandas with memory optimization

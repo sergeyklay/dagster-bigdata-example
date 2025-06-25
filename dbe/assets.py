@@ -29,6 +29,7 @@ PRODUCT_LINES = ["Payment System", "Mobile App", "API Integration"]
     io_manager_key="s3_io_manager",
     compute_kind="python",
     group_name="data_generation",
+    tags={"dagster/concurrency_key": "data_generation"},
 )
 def synthetic_support_tickets(context: AssetExecutionContext) -> pa.Table:
     """Generate synthetic support ticket data using PyArrow for memory efficiency."""
@@ -77,6 +78,7 @@ def synthetic_support_tickets(context: AssetExecutionContext) -> pa.Table:
     compute_kind="semanticmodel",
     group_name="embeddings",
     deps=[synthetic_support_tickets],
+    tags={"dagster/concurrency_key": "embeddings"},
 )
 def ticket_embeddings(
     context: AssetExecutionContext, synthetic_support_tickets: pd.DataFrame
@@ -96,8 +98,8 @@ def ticket_embeddings(
 
     context.log.info("Generating embeddings for %s messages", len(messages))
 
-    # Generate embeddings in memory-efficient batches
-    batch_size = 128
+    # Generate embeddings in smaller batches to reduce memory usage
+    batch_size = 64  # Reduced to 64 for lower memory usage
     all_embeddings = []
 
     for i in range(0, len(messages), batch_size):
@@ -106,10 +108,11 @@ def ticket_embeddings(
             batch_messages,
             convert_to_numpy=True,  # Ensure numpy output for efficiency
             show_progress_bar=False,  # Reduce overhead
+            batch_size=32,  # Internal model batch size
         )
         all_embeddings.append(batch_embeddings)
 
-        if (i // batch_size + 1) % 10 == 0:
+        if (i // batch_size + 1) % 5 == 0:  # Log more frequently with smaller batches
             context.log.info("Processed %s messages", i + len(batch_messages))
 
     # Concatenate all embeddings efficiently with numpy
@@ -141,15 +144,16 @@ def ticket_embeddings(
     io_manager_key="s3_io_manager",
     compute_kind="semanticmodel",
     group_name="clustering",
+    tags={"dagster/concurrency_key": "clustering"},
 )
 def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> str:
     """Train clustering model using memory-efficient PyArrow streaming."""
     context.log.info("Starting incremental clustering model training")
 
-    # Initialize MiniBatchKMeans
+    # Initialize MiniBatchKMeans with smaller batch size
     model = MiniBatchKMeans(
         n_clusters=20,
-        batch_size=20_000,
+        batch_size=10_000,  # Reduced to 10k for lower memory usage
         random_state=42,
         max_iter=100,
         verbose=1,
@@ -254,6 +258,7 @@ def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> 
     compute_kind="semanticmodel",
     group_name="clustering",
     deps=[ticket_embeddings, trained_clustering_model],
+    tags={"dagster/concurrency_key": "clustering"},
 )
 def ticket_clusters(
     context: AssetExecutionContext,
@@ -331,6 +336,7 @@ def ticket_clusters(
     compute_kind="python",
     group_name="analysis",
     deps=[ticket_clusters, synthetic_support_tickets],
+    tags={"dagster/concurrency_key": "analysis"},
 )
 def cluster_analysis(context: AssetExecutionContext, s3: S3Resource) -> dict:
     """Analyze clustering results with memory-efficient processing."""
@@ -367,7 +373,6 @@ def cluster_analysis(context: AssetExecutionContext, s3: S3Resource) -> dict:
         },
     }
 
-    # Save analysis results to S3
     analysis_key = "analysis/cluster_analysis_results.json"
 
     try:
