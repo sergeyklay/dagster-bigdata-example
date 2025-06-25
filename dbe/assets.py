@@ -309,8 +309,6 @@ def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> 
 )
 def ticket_clusters(
     context: AssetExecutionContext,
-    ticket_embeddings: str,
-    trained_clustering_model: str,
     s3: S3Resource,
 ) -> pa.Table:
     """Assign clusters using streaming from S3 paths."""
@@ -318,11 +316,11 @@ def ticket_clusters(
 
     try:
         # Load the trained model from S3
-        model_key = trained_clustering_model.replace("s3://dbe/", "")
+        model_key = "clustering/trained_model.pkl"
         response = s3.get_client().get_object(Bucket="dbe", Key=model_key)
         model = pickle.loads(response["Body"].read())
 
-        embeddings_key = ticket_embeddings.replace("s3://dbe/", "")
+        embeddings_key = f"ticket_embeddings/{context.partition_key}.parquet"
         response = s3.get_client().get_object(Bucket="dbe", Key=embeddings_key)
         buffer = BytesIO(response["Body"].read())
 

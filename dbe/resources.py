@@ -5,9 +5,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from dagster_aws.s3 import S3Resource
 
-from dagster import (
-    ConfigurableIOManager,
-)
+from dagster import ConfigurableIOManager
 
 
 def create_s3_resource():
@@ -51,8 +49,6 @@ class S3PathAwareIOManager(ConfigurableIOManager):
                 compression="snappy",
                 use_dictionary=True,
                 write_statistics=True,
-                row_group_size=50000,
-                data_page_size=1024 * 1024,
             )
 
             buffer.seek(0)

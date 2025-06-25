@@ -23,7 +23,7 @@ concurrency:
     max_concurrent_runs: 4  # Limit total concurrent runs
     tag_concurrency_limits:
       - key: 'dagster/partition_set'
-        limit: 4  # Only 2 partitions can run at once
+        limit: 4  # Only 4 partitions can run at once
       - key: 'dagster/concurrency_key'
         value: 'data_generation'
         limit: 2  # Only 2 data generation asset at a time
