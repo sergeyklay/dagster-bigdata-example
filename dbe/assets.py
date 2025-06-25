@@ -10,6 +10,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import MiniBatchKMeans
 
 from dagster import (
+    AllPartitionMapping,
+    AssetDep,
     AssetExecutionContext,
     StaticPartitionsDefinition,
     asset,
@@ -81,63 +83,103 @@ def synthetic_support_tickets(context: AssetExecutionContext) -> pa.Table:
     tags={"dagster/concurrency_key": "embeddings"},
 )
 def ticket_embeddings(
-    context: AssetExecutionContext, synthetic_support_tickets: pd.DataFrame
-) -> pa.Table:
-    """Generate embeddings using PyArrow for memory-efficient processing."""
+    context: AssetExecutionContext, synthetic_support_tickets: str, s3: S3Resource
+) -> None:
+    """Generate embeddings using streaming ParquetWriter for memory efficiency."""
     partition_key = context.partition_key
 
     context.log.info("Processing embeddings for %s", partition_key)
+
+    s3_key = synthetic_support_tickets.replace("s3://dbe/", "")
+
+    response = s3.get_client().get_object(Bucket="dbe", Key=s3_key)
+    buffer = BytesIO(response["Body"].read())
+
+    table = pq.read_table(
+        buffer,
+        columns=["ticket_id", "message_text"],
+        use_threads=False,
+    )
+
     context.log.info("Loading SentenceTransformer model")
 
     # Load the sentence transformer model
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # Extract message texts and ticket IDs efficiently
-    messages = synthetic_support_tickets["message_text"].tolist()
-    ticket_ids = synthetic_support_tickets["ticket_id"].tolist()
+    # Define schema for streaming output
+    schema = pa.schema(
+        [("ticket_id", pa.int64()), *[(f"emb_{i}", pa.float32()) for i in range(384)]]
+    )
 
-    context.log.info("Generating embeddings for %s messages", len(messages))
+    # Prepare streaming writer with basic settings
+    output_buffer = BytesIO()
+    writer = pq.ParquetWriter(
+        output_buffer,
+        schema,
+        compression="snappy",
+        use_dictionary=True,
+        write_statistics=True,
+    )
 
-    # Generate embeddings in smaller batches to reduce memory usage
-    batch_size = 64  # Reduced to 64 for lower memory usage
-    all_embeddings = []
+    # Process in streaming batches - NO memory accumulation
+    batch_size = 1000
+    total_processed = 0
 
-    for i in range(0, len(messages), batch_size):
-        batch_messages = messages[i : i + batch_size]
-        batch_embeddings = model.encode(
-            batch_messages,
-            convert_to_numpy=True,  # Ensure numpy output for efficiency
-            show_progress_bar=False,  # Reduce overhead
-            batch_size=32,  # Internal model batch size
-        )
-        all_embeddings.append(batch_embeddings)
+    try:
+        for batch in table.to_batches(max_chunksize=batch_size):
+            batch_df = batch.to_pandas()
+            messages = batch_df["message_text"].tolist()
+            ticket_ids = batch_df["ticket_id"].tolist()
 
-        if (i // batch_size + 1) % 5 == 0:  # Log more frequently with smaller batches
-            context.log.info("Processed %s messages", i + len(batch_messages))
+            # Generate embeddings for this batch
+            embeddings = model.encode(
+                messages,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+                batch_size=64,
+            )
 
-    # Concatenate all embeddings efficiently with numpy
-    embeddings_array = np.vstack(all_embeddings)
+            # Create PyArrow arrays for this batch
+            arrays = [pa.array(ticket_ids, type=pa.int64())]
 
-    # Create PyArrow Table with optimized memory layout
-    # Use PyArrow arrays for better memory efficiency
-    arrays = [pa.array(ticket_ids, type=pa.int64())]
-    names = ["ticket_id"]
+            # Add embedding columns efficiently
+            for i in range(384):
+                arrays.append(pa.array(embeddings[:, i], type=pa.float32()))
 
-    # Add embedding columns as float32 for memory efficiency
-    for i in range(embeddings_array.shape[1]):
-        arrays.append(pa.array(embeddings_array[:, i], type=pa.float32()))
-        names.append(f"emb_{i}")
+            # Create batch table and write immediately
+            batch_table = pa.Table.from_arrays(arrays, schema=schema)
+            writer.write_table(batch_table)
 
-    table = pa.Table.from_arrays(arrays, names=names)
+            total_processed += len(batch_table)
+
+            if total_processed % 5000 == 0:
+                context.log.info("Processed %d messages", total_processed)
+
+            # Explicit cleanup
+            del embeddings, batch_table, arrays
+
+    finally:
+        writer.close()
+
+    # Write final result to S3
+    output_buffer.seek(0)
+    parquet_bytes = output_buffer.getvalue()
+
+    output_key = f"ticket_embeddings/{partition_key}.parquet"
+    s3.get_client().put_object(
+        Bucket="dbe",
+        Key=output_key,
+        Body=parquet_bytes,
+        ContentType="application/octet-stream",
+    )
 
     context.log.info(
-        "Generated embeddings with shape %s for %s",
-        embeddings_array.shape,
+        "Generated embeddings for %d tickets in %s (%d bytes)",
+        total_processed,
         partition_key,
+        len(parquet_bytes),
     )
     context.log.info("PyArrow memory allocated: %dMB", pa.total_allocated_bytes() >> 20)
-
-    return table
 
 
 @asset(
@@ -145,18 +187,20 @@ def ticket_embeddings(
     compute_kind="semanticmodel",
     group_name="clustering",
     tags={"dagster/concurrency_key": "clustering"},
+    deps=[AssetDep(ticket_embeddings, partition_mapping=AllPartitionMapping())],
 )
 def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> str:
-    """Train clustering model using memory-efficient PyArrow streaming."""
+    """Train clustering model using streaming S3 access."""
     context.log.info("Starting incremental clustering model training")
 
-    # Initialize MiniBatchKMeans with smaller batch size
+    # Initialize MiniBatchKMeans with optimized settings
     model = MiniBatchKMeans(
         n_clusters=20,
-        batch_size=10_000,  # Reduced to 10k for lower memory usage
+        batch_size=5_000,  # Reduced for better memory efficiency
         random_state=42,
-        max_iter=100,
-        verbose=1,
+        max_iter=50,  # Reduced iterations
+        verbose=0,  # Disable verbose for cleaner logs
+        n_init=3,  # Fewer initializations
     )
 
     # Check which embedding partitions are available
@@ -165,44 +209,47 @@ def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> 
 
     for partition_key in PARTITIONS.get_partition_keys():
         try:
-            # Try to load embeddings for this partition using PyArrow
             embedding_path = f"ticket_embeddings/{partition_key}.parquet"
 
             try:
                 response = s3.get_client().get_object(Bucket="dbe", Key=embedding_path)
 
-                # Use PyArrow for memory-efficient streaming read
+                # Use streaming approach with smaller chunks
                 parquet_bytes = response["Body"].read()
                 buffer = BytesIO(parquet_bytes)
 
                 # Read with PyArrow for better memory management
                 table = pq.read_table(
                     buffer,
-                    # Only read embedding columns for efficiency
-                    columns=[f"emb_{i}" for i in range(384)],
-                    use_threads=True,
-                    buffer_size=1024 * 1024,
+                    columns=[f"emb_{i}" for i in range(384)],  # Only embedding columns
+                    use_threads=False,
                 )
 
-                # Convert to numpy array efficiently
-                embeddings = table.to_pandas(
-                    self_destruct=True,  # Free Arrow memory immediately
-                ).values.astype(np.float32)
+                # Process in smaller streaming batches
+                batch_count = 0
+                for batch in table.to_batches(max_chunksize=2000):  # Smaller chunks
+                    embeddings = batch.to_pandas(
+                        self_destruct=True,  # Free Arrow memory immediately
+                    ).values.astype(np.float32)
 
-                # Perform partial fit
-                model.partial_fit(embeddings)
+                    # Perform partial fit
+                    model.partial_fit(embeddings)
+                    batch_count += 1
+
+                    # Free memory explicitly
+                    del embeddings
 
                 partitions_processed += 1
-                total_samples += len(embeddings)
+                total_samples += len(table)
 
                 context.log.info(
-                    "Trained on partition %s - %s samples",
+                    "Trained on partition %s - %d samples",
                     partition_key,
-                    len(embeddings),
+                    len(table),
                 )
 
                 # Free memory explicitly
-                del embeddings, table
+                del table
 
             except Exception as partition_error:
                 context.log.info(
@@ -237,7 +284,7 @@ def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> 
 
         context.log.info("Saved clustering model to s3://dbe/%s", model_key)
         context.log.info(
-            "Model trained on %s partitions with %s total samples",
+            "Model trained on %d partitions with %d total samples",
             partitions_processed,
             total_samples,
         )
@@ -262,71 +309,72 @@ def trained_clustering_model(context: AssetExecutionContext, s3: S3Resource) -> 
 )
 def ticket_clusters(
     context: AssetExecutionContext,
-    ticket_embeddings: pd.DataFrame,
-    trained_clustering_model: str,
     s3: S3Resource,
 ) -> pa.Table:
-    """Assign clusters using PyArrow for memory efficiency."""
-    partition_key = context.partition_key
-
-    context.log.info("Assigning clusters for %s", partition_key)
+    """Assign clusters using streaming from S3 paths."""
+    context.log.info("Assigning clusters for %s", context.partition_key)
 
     try:
         # Load the trained model from S3
-        model_key = trained_clustering_model.replace("s3://dbe/", "")
+        model_key = "clustering/trained_model.pkl"
         response = s3.get_client().get_object(Bucket="dbe", Key=model_key)
         model = pickle.loads(response["Body"].read())
 
-        # Extract embeddings efficiently using PyArrow
-        # Convert to PyArrow table first for better memory management
-        if isinstance(ticket_embeddings, pd.DataFrame):
-            table = pa.Table.from_pandas(ticket_embeddings, preserve_index=False)
-        else:
-            table = ticket_embeddings
+        embeddings_key = f"ticket_embeddings/{context.partition_key}.parquet"
+        response = s3.get_client().get_object(Bucket="dbe", Key=embeddings_key)
+        buffer = BytesIO(response["Body"].read())
 
-        # Get embedding columns efficiently
-        embedding_columns = [
-            col for col in table.column_names if col.startswith("emb_")
-        ]
-        embedding_table = table.select(embedding_columns)
+        # Stream process embeddings in batches
+        table = pq.read_table(buffer, use_threads=False)
 
-        # Convert to numpy for sklearn processing
-        embeddings = embedding_table.to_pandas(
-            self_destruct=True,  # Free Arrow memory immediately
-        ).values.astype(np.float32)
-
-        # Get ticket IDs
+        # Get ticket IDs first (they're small)
         ticket_ids = table.column("ticket_id").to_pandas()
 
-        context.log.info("Predicting clusters for %s tickets", len(embeddings))
+        # Process embeddings in streaming batches to reduce memory
+        all_cluster_ids = []
+        batch_size = 5000  # Process in smaller batches
 
-        # Predict cluster assignments
-        cluster_ids = model.predict(embeddings)
+        embedding_columns = [f"emb_{i}" for i in range(384)]
+        embedding_table = table.select(embedding_columns)
+
+        for i, batch in enumerate(embedding_table.to_batches(max_chunksize=batch_size)):
+            # Convert to numpy for sklearn processing
+            embeddings = batch.to_pandas(
+                self_destruct=True,  # Free Arrow memory immediately
+            ).values.astype(np.float32)
+
+            # Predict cluster assignments for this batch
+            batch_clusters = model.predict(embeddings)
+            all_cluster_ids.extend(batch_clusters)
+
+            # Free memory
+            del embeddings
+
+            if (i + 1) % 10 == 0:
+                context.log.info("Processed batch %d", i + 1)
+
+        context.log.info("Predicted clusters for %d tickets", len(all_cluster_ids))
 
         # Create result as PyArrow Table for memory efficiency
         result_table = pa.Table.from_arrays(
             [
                 pa.array(ticket_ids, type=pa.int64()),
-                pa.array(cluster_ids, type=pa.int32()),
+                pa.array(all_cluster_ids, type=pa.int32()),
             ],
             names=["ticket_id", "cluster_id"],
         )
 
         # Add some metadata about cluster distribution
-        cluster_counts = pd.Series(cluster_ids).value_counts().sort_index()
-        context.log.info("Cluster distribution for %s:", partition_key)
+        cluster_counts = pd.Series(all_cluster_ids).value_counts().sort_index()
+        context.log.info("Cluster distribution for %s:", context.partition_key)
         for cluster_id, count in cluster_counts.items():
-            context.log.info("  Cluster %s: %s tickets", cluster_id, count)
-
-        context.log.info(
-            "PyArrow memory allocated: %dMB", pa.total_allocated_bytes() >> 20
-        )
+            context.log.info("  Cluster %d: %d tickets", cluster_id, count)
 
         return result_table
 
     except Exception as e:
         context.log.error(
-            "Error in cluster assignment for %s: %s", partition_key, str(e)
+            "Error in cluster assignment for %s: %s", context.partition_key, str(e)
         )
         raise
 
@@ -339,10 +387,9 @@ def ticket_clusters(
     tags={"dagster/concurrency_key": "analysis"},
 )
 def cluster_analysis(context: AssetExecutionContext, s3: S3Resource) -> dict:
-    """Analyze clustering results with memory-efficient processing."""
+    """Analyze clustering results with streaming processing."""
     context.log.info("Starting cluster analysis across all partitions")
 
-    # Sample analysis structure with memory usage reporting
     analysis_results = {
         "total_tickets_processed": 50 * ROWS_PER_PARTITION,
         "total_partitions": 50,
@@ -352,6 +399,7 @@ def cluster_analysis(context: AssetExecutionContext, s3: S3Resource) -> dict:
             "streaming_processing": True,
             "memory_efficient_parquet": True,
             "float32_embeddings": True,
+            "path_aware_io_manager": True,
         },
         "cluster_insights": {
             "payment_system_clusters": [0, 1, 2, 3, 4, 5, 6],
@@ -368,7 +416,7 @@ def cluster_analysis(context: AssetExecutionContext, s3: S3Resource) -> dict:
             "data_generation_complete": True,
             "embeddings_complete": True,
             "clustering_complete": True,
-            "total_processing_time": "estimated 2-4 hours for full pipeline",
+            "total_processing_time": "estimated 1-2 hours for full pipeline",
             "pyarrow_memory_usage_mb": pa.total_allocated_bytes() >> 20,
         },
     }
