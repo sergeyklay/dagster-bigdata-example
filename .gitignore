@@ -12,3 +12,6 @@ wheels/
 # Dagster Home
 dagster/**/*
 !dagster/dagster.yaml
+
+# Build artifacts
+/build
