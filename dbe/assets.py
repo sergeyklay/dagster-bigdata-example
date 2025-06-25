@@ -1,25 +1,7 @@
 import pandas as pd
-from dagster_aws.s3 import S3PickleIOManager, S3Resource
+from dagster_aws.s3 import S3Resource
 
 import dagster as dg
-
-
-def create_s3_resource():
-    """Create S3 resource for Minio."""
-    return S3Resource(
-        endpoint_url="http://localhost:9000",
-        aws_access_key_id="minio",
-        aws_secret_access_key="miniosecret",
-        region_name="us-east-1",
-    )
-
-
-def create_s3_io_manager():
-    """Create S3 IO Manager."""
-    return S3PickleIOManager(
-        s3_resource=create_s3_resource(),
-        s3_bucket="dbe",
-    )
 
 
 @dg.asset(io_manager_key="s3_io_manager")
@@ -58,12 +40,3 @@ def processed_data_csv(
 
     context.log.info("Uploaded processed data CSV to s3://dbe/%s", s3_key)
     return f"s3://dbe/{s3_key}"
-
-
-defs = dg.Definitions(
-    assets=[sample_data, processed_data, processed_data_csv],
-    resources={
-        "s3_io_manager": create_s3_io_manager(),
-        "s3": create_s3_resource(),
-    },
-)

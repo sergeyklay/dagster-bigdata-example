@@ -37,7 +37,7 @@ uv sync
 Start the Dagster development server:
 
 ```bash
-dagster dev -f dbe/assets.py
+dagster dev -m dbe.definitions
 ```
 
 Or using the serve script:
@@ -86,14 +86,20 @@ You can also access the data programmatically using boto3 or AWS CLI configured 
 ### Project Structure
 
 ```
+├── dagster/
+│   └── dagster.yaml       # Dagster instance configuration
 ├── dbe/
 │   ├── __init__.py
-│   └── assets.py          # Dagster assets with S3 integration
+│   ├── assets.py          # Dagster assets with S3 integration
+│   ├── definitions.py     # Dagster definitions (assets + resources)
+│   └── resources.py       # S3 and IO manager resource definitions
 ├── data/
 │   └── sample_data.csv    # Input data
 ├── docker-compose.yml     # Minio service definition
-├── setup_s3.py           # S3 setup script
-└── pyproject.toml        # Dependencies
+├── serve.sh               # Development server startup script
+├── Makefile               # Build and utility commands
+├── pyproject.toml         # Dependencies and project configuration
+└── uv.lock                # Dependency lock file
 ```
 
 ### Key Features

@@ -9,4 +9,4 @@ echo "DAGSTER_HOME=$DAGSTER_HOME"
 echo "PYTHONPATH=$PYTHONPATH"
 
 # Run the dagster dev server
-uv run dagster dev -f dbe/assets.py
+uv run dagster dev -m dbe.definitions
