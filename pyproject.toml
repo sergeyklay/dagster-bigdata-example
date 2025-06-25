@@ -1,0 +1,42 @@
+[project]
+name = "dbe"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "dagster>=1.10.21",
+    "dagster-aws>=0.26.21",
+    "dagster-webserver>=1.10.21",
+    "pandas>=2.3.0",
+    "pyarrow>=20.0.0",
+    "boto3>=1.35.0",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.12.0"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+extend-select = [
+    "I",      # All imports
+    "E",      # All errors
+    "W",      # All warnings
+    "F",      # All false positives
+    "C",      # All complexity
+    "Q",      # All quality
+    "UP006",  # Enforcing the use of PEP 585 syntax
+    "UP007",  # Enforcing the use of PEP 604 syntax
+    "RET505", # Unnecessary `else` after `return` statement
+    "B006",   # Do not use mutable data structures for argument defaults
+    "B904",   # Use `raise ... from err` instead of `raise ...`
+    "B905",   # Specify `strict` when using `zip()`
+    "G004",   # Don't use f-strings for string interpolation in logging
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dbe"]

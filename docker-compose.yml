@@ -1,0 +1,40 @@
+name: dbe
+
+services:
+  #
+  # S3-like object storage for local development
+  #
+  minio:
+    image: minio/minio
+    container_name: dbe-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/dbe && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+      S3_BUCKET: dbe
+    mem_limit: 2g
+    cpus: 1.0
+    ports:
+      - "127.0.0.1:9000:9000" # S3 API
+      - "127.0.0.1:9001:9001" # Web console
+    networks:
+      - dbe-network
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 30s
+      retries: 10
+      start_period: 10s
+
+networks:
+  dbe-network:
+    driver: bridge
+    name: dbe-network
+
+volumes:
+  minio_data:
+    driver: local
